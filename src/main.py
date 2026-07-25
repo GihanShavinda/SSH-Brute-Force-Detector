@@ -1,14 +1,17 @@
 """
-main.py
--------
-Entry point for the SSH Brute Force Detector.
+main.py (Windows)
+------------------
+Entry point for the SSH/RDP Brute Force Detector on Windows.
 
-Usage:
-    sudo python3 src/main.py --config config/config.yaml
-    sudo python3 src/main.py --config config/config.yaml --dry-run
+IMPORTANT: There is no `sudo` on Windows. Instead, open Command Prompt or
+PowerShell **as Administrator** (right-click -> "Run as administrator"),
+then run:
 
-Run as root (or with sudo) since reading /var/log/auth.log and modifying
-firewall rules both typically require elevated privileges.
+    python src\\main.py --config config\\config.yaml
+    python src\\main.py --config config\\config.yaml --dry-run
+
+Administrator rights are required because reading the Security Event Log
+and adding/removing Windows Firewall rules both require elevation.
 """
 
 import argparse
@@ -58,8 +61,16 @@ def expiry_loop(ban_manager: BanManager, interval: int = 30) -> None:
         time.sleep(interval)
 
 
+def is_admin() -> bool:
+    try:
+        import ctypes
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="SSH Brute Force Detector")
+    parser = argparse.ArgumentParser(description="SSH/RDP Brute Force Detector (Windows)")
     parser.add_argument(
         "--config", default="config/config.yaml", help="Path to config.yaml"
     )
@@ -69,6 +80,15 @@ def main() -> None:
         help="Log what would be banned without touching the firewall",
     )
     args = parser.parse_args()
+
+    if not is_admin() and not args.dry_run:
+        print(
+            "WARNING: This does not appear to be running elevated.\n"
+            "Reading the Security Event Log and modifying the Windows "
+            "Firewall both require Administrator rights.\n"
+            "Right-click your terminal and choose 'Run as administrator', "
+            "then re-run this command.\n"
+        )
 
     cfg = load_config(args.config)
 
@@ -83,8 +103,7 @@ def main() -> None:
     )
 
     ban_manager = BanManager(
-        backend=cfg["banning"]["backend"],
-        chain_name=cfg["banning"]["chain_name"],
+        rule_prefix=cfg["banning"]["rule_prefix"],
         ban_log_file=cfg["logging"]["ban_log_file"],
         dry_run=args.dry_run,
     )
@@ -95,10 +114,10 @@ def main() -> None:
     ).get("enabled") else None
 
     logger.info(
-        "Starting SSH Brute Force Detector (max_failures=%s, window=%ss, backend=%s, dry_run=%s)",
+        "Starting SSH/RDP Brute Force Detector (max_failures=%s, window=%ss, source=%s, dry_run=%s)",
         detector.max_failures,
         detector.window_seconds,
-        ban_manager.backend,
+        cfg["log_source"],
         args.dry_run,
     )
 
@@ -108,7 +127,11 @@ def main() -> None:
     ).start()
 
     try:
-        for event in watch(cfg["log_file"], use_journalctl=cfg.get("use_journalctl", False)):
+        for event in watch(
+            log_source=cfg["log_source"],
+            log_file=cfg.get("log_file"),
+            eventlog_logon_types=cfg.get("eventlog_logon_types", []),
+        ):
             logger.info(
                 "Failed login attempt: user=%s ip=%s", event.user, event.ip
             )
@@ -132,7 +155,7 @@ def main() -> None:
         logger.error("Log file not found: %s", exc)
         sys.exit(1)
     except PermissionError as exc:
-        logger.error("Permission denied — try running with sudo: %s", exc)
+        logger.error("Permission denied — re-run from an elevated (Administrator) prompt: %s", exc)
         sys.exit(1)
 
 

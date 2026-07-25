@@ -1,12 +1,12 @@
 """
-manage_bans.py
---------------
-Small CLI helper for inspecting/manually adjusting bans, reading straight
-from the ban_log_file audit trail (JSON lines, one event per line).
+manage_bans.py (Windows)
+------------------------
+CLI helper for inspecting/manually adjusting bans, reading from the
+ban_log_file audit trail (JSON lines, one event per line).
 
-Usage:
-    python3 src/manage_bans.py list
-    sudo python3 src/manage_bans.py unban 10.0.0.7 --config config/config.yaml
+Usage (run as Administrator for `unban`):
+    python src\\manage_bans.py list
+    python src\\manage_bans.py unban 10.0.0.7 --config config\\config.yaml
 """
 
 import argparse
@@ -45,19 +45,17 @@ def list_active_bans(ban_log_file: str) -> None:
         print(f"{ip:<20}{entry['banned_at']:<25}{entry.get('expires_at') or 'never'}")
 
 
-def unban_ip(ip: str, chain_name: str, backend: str) -> None:
-    if backend == "iptables":
-        subprocess.run(["iptables", "-D", chain_name, "-s", ip, "-j", "DROP"], check=True)
-    elif backend == "ufw":
-        subprocess.run(["ufw", "delete", "deny", "from", ip, "to", "any"], check=True)
-    else:
-        print(f"Manual unban for backend '{backend}' not implemented in this helper.")
-        sys.exit(1)
+def unban_ip(ip: str, rule_prefix: str) -> None:
+    name = f"{rule_prefix}_{ip}"
+    subprocess.run(
+        ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"],
+        check=True,
+    )
     print(f"Unbanned {ip}.")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Manage SSH brute-force bans")
+    parser = argparse.ArgumentParser(description="Manage SSH/RDP brute-force bans (Windows)")
     parser.add_argument("--config", default="config/config.yaml")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -72,7 +70,7 @@ def main() -> None:
     if args.command == "list":
         list_active_bans(cfg["logging"]["ban_log_file"])
     elif args.command == "unban":
-        unban_ip(args.ip, cfg["banning"]["chain_name"], cfg["banning"]["backend"])
+        unban_ip(args.ip, cfg["banning"]["rule_prefix"])
 
 
 if __name__ == "__main__":

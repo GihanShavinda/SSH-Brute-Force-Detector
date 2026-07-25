@@ -1,16 +1,12 @@
 """
-ban_manager.py
---------------
-Applies and removes firewall bans for offending IPs, using one of:
-  - iptables
-  - nftables
-  - ufw
+ban_manager.py (Windows)
+------------------------
+Applies and removes Windows Firewall rules to block offending IPs, using
+`netsh advfirewall firewall`. Must be run from an elevated (Administrator)
+terminal/prompt.
 
-Also tracks ban expiry times in memory + an on-disk audit log so bans can
-be lifted automatically after `ban_duration_seconds`.
-
-NOTE: Actually blocking traffic requires root privileges on the host
-running this script (sudo / run as root).
+Also tracks ban expiry times in memory + an on-disk JSON audit log so bans
+can be lifted automatically after `ban_duration_seconds`.
 """
 
 import json
@@ -28,41 +24,33 @@ class BanRecord:
     expires_at: Optional[float]  # None = permanent
 
 
+def _rule_name(prefix: str, ip: str) -> str:
+    # Firewall rule names can't contain some characters; ':' from IPv6 is fine
+    # for netsh but we normalise anyway to keep rule names tidy.
+    return f"{prefix}_{ip}"
+
+
 class BanManager:
     def __init__(
         self,
-        backend: str = "iptables",
-        chain_name: str = "SSH_BF_BAN",
-        ban_log_file: str = "logs/banned_ips.log",
+        rule_prefix: str = "SSH_BF_BAN",
+        ban_log_file: str = "logs\\banned_ips.log",
         dry_run: bool = False,
     ):
-        self.backend = backend
-        self.chain_name = chain_name
+        self.rule_prefix = rule_prefix
         self.ban_log_file = ban_log_file
         self.dry_run = dry_run
         self._active_bans: Dict[str, BanRecord] = {}
 
         os.makedirs(os.path.dirname(ban_log_file) or ".", exist_ok=True)
 
-        if backend == "iptables":
-            self._ensure_iptables_chain()
-
-    # ---------- backend setup ----------
+    # ---------- backend ----------
 
     def _run(self, cmd: list) -> None:
         if self.dry_run:
             print(f"[DRY-RUN] {' '.join(cmd)}")
             return
-        subprocess.run(cmd, check=True)
-
-    def _ensure_iptables_chain(self) -> None:
-        # Create the chain if it doesn't exist, and make sure INPUT jumps to it
-        check = subprocess.run(
-            ["iptables", "-L", self.chain_name], capture_output=True
-        )
-        if check.returncode != 0:
-            self._run(["iptables", "-N", self.chain_name])
-            self._run(["iptables", "-I", "INPUT", "-j", self.chain_name])
+        subprocess.run(cmd, check=True, shell=False)
 
     # ---------- public API ----------
 
@@ -73,16 +61,17 @@ class BanManager:
         if self.is_banned(ip):
             return  # already banned
 
-        if self.backend == "iptables":
-            self._run(["iptables", "-A", self.chain_name, "-s", ip, "-j", "DROP"])
-        elif self.backend == "nftables":
-            self._run(
-                ["nft", "add", "rule", "inet", "filter", "input", "ip", "saddr", ip, "drop"]
-            )
-        elif self.backend == "ufw":
-            self._run(["ufw", "deny", "from", ip, "to", "any"])
-        else:
-            raise ValueError(f"Unsupported backend: {self.backend}")
+        name = _rule_name(self.rule_prefix, ip)
+        self._run(
+            [
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={name}",
+                "dir=in",
+                "action=block",
+                f"remoteip={ip}",
+                "enable=yes",
+            ]
+        )
 
         now = time.time()
         expires_at = now + duration_seconds if duration_seconds > 0 else None
@@ -94,20 +83,10 @@ class BanManager:
         if not self.is_banned(ip):
             return
 
-        if self.backend == "iptables":
-            self._run(["iptables", "-D", self.chain_name, "-s", ip, "-j", "DROP"])
-        elif self.backend == "nftables":
-            # Removing a single nft rule requires a handle lookup; simplest
-            # robust approach is flushing and re-adding remaining bans.
-            self._run(["nft", "flush", "chain", "inet", "filter", "input"])
-            for other_ip, rec in self._active_bans.items():
-                if other_ip != ip:
-                    self._run(
-                        ["nft", "add", "rule", "inet", "filter", "input", "ip",
-                         "saddr", other_ip, "drop"]
-                    )
-        elif self.backend == "ufw":
-            self._run(["ufw", "delete", "deny", "from", ip, "to", "any"])
+        name = _rule_name(self.rule_prefix, ip)
+        self._run(
+            ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"]
+        )
 
         record = self._active_bans.pop(ip)
         self._log_event("UNBAN", record)
