@@ -1,0 +1,46 @@
+# SSH Brute Force Detector - Configuration
+
+# Path to the SSH auth log. Common locations:
+#   Debian/Ubuntu: /var/log/auth.log
+#   RHEL/CentOS:   /var/log/secure
+log_file: "/var/log/auth.log"
+
+# If true, read logs via `journalctl` instead of a flat file (needed on
+# systems that only log to systemd-journal, e.g. some minimal distros).
+use_journalctl: false
+
+detection:
+  # Number of failed login attempts before an IP is banned
+  max_failures: 5
+
+  # Time window (seconds) in which those failures must occur
+  window_seconds: 300
+
+  # How long a ban lasts, in seconds (0 = permanent until manually unbanned)
+  ban_duration_seconds: 3600
+
+  # Never ban these IPs / networks (your own management IP, office IP, etc.)
+  whitelist:
+    - "127.0.0.1"
+    - "::1"
+    # - "203.0.113.10"
+    # - "10.0.0.0/8"
+
+banning:
+  # Backend used to actually block traffic: "iptables", "nftables", or "ufw"
+  backend: "iptables"
+
+  # Chain name used for banned IPs (keeps our rules separate/easy to flush)
+  chain_name: "SSH_BF_BAN"
+
+logging:
+  # Where the detector writes its own activity log
+  app_log_file: "logs/detector.log"
+  # Where every ban/unban event is recorded (audit trail)
+  ban_log_file: "logs/banned_ips.log"
+  level: "INFO"
+
+notifications:
+  enabled: false
+  # Simple webhook (Slack/Discord/generic) - POSTs a JSON payload on each ban
+  webhook_url: ""
